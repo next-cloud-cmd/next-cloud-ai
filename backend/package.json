@@ -1,44 +1,24 @@
 {
   "name": "next-cloud-ai-backend",
   "version": "2025.1.0",
-  "description": "Next Cloud AI Backend API - Enterprise AI Solutions Platform for 2025",
+  "description": "Next Cloud AI Production Backend",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js",
-    "test": "echo \"No tests specified yet\" && exit 0",
-    "setup": "echo \"Setting up Next Cloud AI backend...\" && npm install"
+    "dev": "node --watch server.js",
+    "production": "NODE_ENV=production node server.js"
   },
-  "keywords": [
-    "ai",
-    "artificial-intelligence",
-    "cloud",
-    "api",
-    "machine-learning",
-    "2025",
-    "enterprise",
-    "dashboard"
-  ],
-  "author": {
-    "name": "Next Cloud AI Team",
-    "email": "contact@nextcloudai.com",
-    "url": "https://nextcloudai.com"
-  },
-  "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.0",
+    "sqlite3": "^5.1.6",
+    "helmet": "^7.1.0",
+    "express-rate-limit": "^7.1.5"
   },
   "engines": {
-    "node": ">=16.0.0",
-    "npm": ">=8.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/your-username/next-cloud-ai.git"
-  },
-  "bugs": {
-    "url": "https://github.com/your-username/next-cloud-ai/issues"
-  },
-  "homepage": "https://github.com/your-username/next-cloud-ai#readme"
+    "node": ">=18.0.0"
+  }
 }
