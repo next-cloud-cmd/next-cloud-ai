@@ -1,299 +1,236 @@
-// Next Cloud AI Server - 2025 Edition
-// الخادم الرئيسي للتطبيق
+import express from 'express';
+import cors from 'cors';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
+import sqlite3 from 'sqlite3';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 
-const express = require('express');
-const cors = require('cors');
-const path = require('path');
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
-// إنشاء تطبيق Express
 const app = express();
 const PORT = process.env.PORT || 3000;
+const JWT_SECRET = process.env.JWT_SECRET || 'your-production-secret-change-in-production';
 
-// إعدادات Middleware
-app.use(cors()); // السماح بالاتصال من أي domain
-app.use(express.json()); // فهم البيانات JSON
+// قاعدة البيانات الحقيقية
+const db = new sqlite3.Database(':memory:'); // في الإنتاج سيتم تغييرها إلى PostgreSQL
 
-// بيانات وهمية للنماذج (بدلاً من قاعدة بيانات حالياً)
-const aiModels = [
-    {
-        id: 1,
-        name: 'Customer Support AI',
-        type: 'Natural Language Processing',
-        status: 'running',
-        accuracy: 95.7,
-        description: 'Advanced chatbot for customer service with sentiment analysis',
-        created_at: '2025-01-15',
-        updated_at: '2025-01-20'
-    },
-    {
-        id: 2,
-        name: 'Image Recognition v4',
-        type: 'Computer Vision',
-        status: 'running',
-        accuracy: 99.1,
-        description: 'Real-time object detection and classification system',
-        created_at: '2025-01-10',
-        updated_at: '2025-01-18'
-    },
-    {
-        id: 3,
-        name: 'Predictive Analytics',
-        type: 'Machine Learning',
-        status: 'training',
-        accuracy: 89.2,
-        description: 'Business intelligence and forecasting models',
-        created_at: '2025-01-05',
-        updated_at: '2025-01-19'
-    },
-    {
-        id: 4,
-        name: 'Speech Recognition',
-        type: 'Audio Processing',
-        status: 'deploying',
-        accuracy: 91.5,
-        description: 'Real-time speech to text conversion',
-        created_at: '2025-01-12',
-        updated_at: '2025-01-17'
+// إنشاء الجداول
+db.serialize(() => {
+  db.run(`CREATE TABLE users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    name TEXT NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  )`);
+
+  db.run(`CREATE TABLE ai_models (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL,
+    description TEXT,
+    status TEXT DEFAULT 'draft',
+    accuracy REAL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  )`);
+
+  db.run(`CREATE TABLE deployments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    model_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT DEFAULT 'stopped',
+    endpoint_url TEXT,
+    api_key TEXT UNIQUE,
+    requests_count INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(model_id) REFERENCES ai_models(id)
+  )`);
+
+  // إضافة مستخدم افتراضي للاختبار
+  const hashedPassword = bcrypt.hashSync('admin123', 10);
+  db.run("INSERT INTO users (email, password, name) VALUES (?, ?, ?)", 
+    ["admin@nextcloudai.com", hashedPassword, "System Admin"]);
+});
+
+// Middleware الحماية
+app.use(helmet());
+app.use(cors());
+app.use(express.json());
+
+// معدل الطلبات
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 دقيقة
+  max: 100 // 100 طلب لكل IP
+});
+app.use(limiter);
+
+// Middleware المصادقة
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return res.status(401).json({ error: 'رمز الوصول مطلوب' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'رمز غير صالح' });
     }
-];
+    req.user = user;
+    next();
+  });
+};
 
-const deployments = [
-    {
-        id: 1,
-        model_id: 1,
-        name: 'Production Chatbot',
-        status: 'running',
-        endpoint: 'https://api.nextcloudai.com/chat/v1',
-        requests_today: 12470,
-        avg_response_time: 320
-    },
-    {
-        id: 2,
-        model_id: 2,
-        name: 'Image API',
-        status: 'running',
-        endpoint: 'https://api.nextcloudai.com/vision/v1',
-        requests_today: 8560,
-        avg_response_time: 450
+// Routes الحقيقية
+
+// 1. المصادقة
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password, name } = req.body;
+    
+    if (!email || !password || !name) {
+      return res.status(400).json({ error: 'جميع الحقول مطلوبة' });
     }
-];
 
-// Routes - الطرق الرئيسية للـ API
-
-// الصفحة الرئيسية
-app.get('/', (req, res) => {
-    res.json({
-        message: '🚀 Next Cloud AI API Server - 2025',
-        version: '1.0.0',
-        timestamp: new Date().toISOString(),
-        endpoints: {
-            health: '/api/health',
-            models: '/api/models',
-            deployments: '/api/deployments',
-            stats: '/api/stats'
+    const hashedPassword = await bcrypt.hash(password, 10);
+    
+    db.run("INSERT INTO users (email, password, name) VALUES (?, ?, ?)", 
+      [email, hashedPassword, name], function(err) {
+        if (err) {
+          return res.status(400).json({ error: 'البريد الإلكتروني مسجل مسبقاً' });
         }
-    });
-});
 
-// فحص صحة الخادم
-app.get('/api/health', (req, res) => {
-    res.json({
-        status: 'healthy',
-        server: 'Next Cloud AI',
-        version: '2025.1.0',
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString()
-    });
-});
-
-// الحصول على جميع النماذج
-app.get('/api/models', (req, res) => {
-    try {
-        res.json({
-            success: true,
-            data: aiModels,
-            count: aiModels.length,
-            timestamp: new Date().toISOString()
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: 'Failed to fetch models',
-            message: error.message
-        });
-    }
-});
-
-// الحصول على نموذج محدد
-app.get('/api/models/:id', (req, res) => {
-    try {
-        const modelId = parseInt(req.params.id);
-        const model = aiModels.find(m => m.id === modelId);
-        
-        if (!model) {
-            return res.status(404).json({
-                success: false,
-                error: 'Model not found'
-            });
-        }
-        
-        res.json({
-            success: true,
-            data: model,
-            timestamp: new Date().toISOString()
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: 'Failed to fetch model',
-            message: error.message
-        });
-    }
-});
-
-// إنشاء نموذج جديد
-app.post('/api/models', (req, res) => {
-    try {
-        const { name, type, description } = req.body;
-        
-        if (!name || !type) {
-            return res.status(400).json({
-                success: false,
-                error: 'Name and type are required'
-            });
-        }
-        
-        const newModel = {
-            id: aiModels.length + 1,
-            name,
-            type,
-            description: description || '',
-            status: 'draft',
-            accuracy: 0,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-        };
-        
-        aiModels.push(newModel);
-        
+        const token = jwt.sign({ userId: this.lastID, email }, JWT_SECRET);
         res.status(201).json({
-            success: true,
-            message: 'Model created successfully',
-            data: newModel,
-            timestamp: new Date().toISOString()
+          message: 'تم إنشاء الحساب بنجاح',
+          token,
+          user: { id: this.lastID, email, name }
         });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: 'Failed to create model',
-            message: error.message
-        });
-    }
-});
-
-// الحصول على جميع النشرات
-app.get('/api/deployments', (req, res) => {
-    try {
-        res.json({
-            success: true,
-            data: deployments,
-            count: deployments.length,
-            timestamp: new Date().toISOString()
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: 'Failed to fetch deployments',
-            message: error.message
-        });
-    }
-});
-
-// الإحصائيات
-app.get('/api/stats', (req, res) => {
-    try {
-        const stats = {
-            total_models: aiModels.length,
-            running_models: aiModels.filter(m => m.status === 'running').length,
-            total_deployments: deployments.length,
-            total_requests_today: deployments.reduce((sum, dep) => sum + dep.requests_today, 0),
-            avg_response_time: deployments.reduce((sum, dep) => sum + dep.avg_response_time, 0) / deployments.length,
-            system_health: 'excellent',
-            last_updated: new Date().toISOString()
-        };
-        
-        res.json({
-            success: true,
-            data: stats,
-            timestamp: new Date().toISOString()
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: 'Failed to fetch stats',
-            message: error.message
-        });
-    }
-});
-
-// تسجيل الدخول
-app.post('/api/auth/login', (req, res) => {
-    try {
-        const { email, password } = req.body;
-        
-        // محاكاة عملية الدخول (سيتم استبدالها لاحقاً)
-        if (email && password) {
-            res.json({
-                success: true,
-                message: 'Login successful',
-                user: {
-                    id: 1,
-                    name: 'Demo User',
-                    email: email,
-                    role: 'admin'
-                },
-                token: 'next-cloud-ai-demo-token-2025',
-                expires_in: '24h'
-            });
-        } else {
-            res.status(400).json({
-                success: false,
-                error: 'Email and password are required'
-            });
-        }
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            error: 'Login failed',
-            message: error.message
-        });
-    }
-});
-
-// معالجة الأخطاء
-app.use((req, res) => {
-    res.status(404).json({
-        success: false,
-        error: 'Endpoint not found',
-        message: `The route ${req.method} ${req.path} does not exist`
     });
+  } catch (error) {
+    res.status(500).json({ error: 'خطأ في السيرفر' });
+  }
 });
 
-// تشغيل الخادم
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    db.get("SELECT * FROM users WHERE email = ?", [email], async (err, user) => {
+      if (err || !user) {
+        return res.status(400).json({ error: 'بيانات الدخول غير صحيحة' });
+      }
+
+      const validPassword = await bcrypt.compare(password, user.password);
+      if (!validPassword) {
+        return res.status(400).json({ error: 'بيانات الدخول غير صحيحة' });
+      }
+
+      const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET);
+      res.json({
+        message: 'تم الدخول بنجاح',
+        token,
+        user: { id: user.id, email: user.email, name: user.name }
+      });
+    });
+  } catch (error) {
+    res.status(500).json({ error: 'خطأ في السيرفر' });
+  }
+});
+
+// 2. إدارة النماذج
+app.get('/api/models', authenticateToken, (req, res) => {
+  db.all("SELECT * FROM ai_models WHERE user_id = ?", [req.user.userId], (err, models) => {
+    if (err) {
+      return res.status(500).json({ error: 'خطأ في جلب النماذج' });
+    }
+    res.json({ models });
+  });
+});
+
+app.post('/api/models', authenticateToken, (req, res) => {
+  const { name, type, description } = req.body;
+  
+  if (!name || !type) {
+    return res.status(400).json({ error: 'الاسم والنوع مطلوبان' });
+  }
+
+  db.run("INSERT INTO ai_models (user_id, name, type, description) VALUES (?, ?, ?, ?)",
+    [req.user.userId, name, type, description], function(err) {
+      if (err) {
+        return res.status(500).json({ error: 'خطأ في إنشاء النموذج' });
+      }
+
+      res.status(201).json({
+        message: 'تم إنشاء النموذج بنجاح',
+        model: { id: this.lastID, name, type, description, status: 'draft' }
+      });
+  });
+});
+
+// 3. النشر
+app.post('/api/deployments', authenticateToken, (req, res) => {
+  const { model_id, name } = req.body;
+  
+  // إنشاء API key فريد
+  const apiKey = 'ncai_' + require('crypto').randomBytes(16).toString('hex');
+  const endpointUrl = `https://api.nextcloudai.com/v1/models/${model_id}`;
+
+  db.run("INSERT INTO deployments (model_id, name, status, endpoint_url, api_key) VALUES (?, ?, ?, ?, ?)",
+    [model_id, name, 'running', endpointUrl, apiKey], function(err) {
+      if (err) {
+        return res.status(500).json({ error: 'خطأ في النشر' });
+      }
+
+      res.status(201).json({
+        message: 'تم النشر بنجاح',
+        deployment: {
+          id: this.lastID,
+          model_id,
+          name,
+          status: 'running',
+          endpoint_url: endpointUrl,
+          api_key: apiKey
+        }
+      });
+  });
+});
+
+// 4. الإحصائيات الحقيقية
+app.get('/api/stats', authenticateToken, (req, res) => {
+  const stats = {
+    total_models: 0,
+    running_deployments: 0,
+    total_requests: 0,
+    avg_response_time: 0
+  };
+
+  // إحصائيات النماذج
+  db.get("SELECT COUNT(*) as count FROM ai_models WHERE user_id = ?", 
+    [req.user.userId], (err, result) => {
+      stats.total_models = result.count;
+
+      // إحصائيات النشر
+      db.get(`SELECT COUNT(*) as count FROM deployments d 
+              JOIN ai_models m ON d.model_id = m.id 
+              WHERE m.user_id = ? AND d.status = 'running'`, 
+        [req.user.userId], (err, result) => {
+          stats.running_deployments = result.count;
+
+          res.json({ stats });
+      });
+  });
+});
+
+// تشغيل السيرفر
 app.listen(PORT, () => {
-    console.log('🚀 Next Cloud AI Server Started Successfully!');
-    console.log('📍 Server Info:');
-    console.log(`   Port: ${PORT}`);
-    console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`   URL: http://localhost:${PORT}`);
-    console.log('📊 Available Endpoints:');
-    console.log(`   GET  /api/health - Health check`);
-    console.log(`   GET  /api/models - List all AI models`);
-    console.log(`   GET  /api/deployments - List deployments`);
-    console.log(`   GET  /api/stats - System statistics`);
-    console.log(`   POST /api/auth/login - User authentication`);
-    console.log('🎯 Server is ready for 2025!');
+  console.log(`🚀 Next Cloud AI Server running on port ${PORT}`);
+  console.log(`📊 API Documentation: http://localhost:${PORT}/api`);
 });
-
-// تصدير التطبيق للاختبارات
-module.exports = app;
